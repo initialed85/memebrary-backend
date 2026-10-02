@@ -54,6 +54,11 @@ func (g *Generator) Start(ctx context.Context) {
 			}
 		}()
 	}
+	if pending, err := g.store.Pending(ctx); err == nil {
+		for _, meme := range pending {
+			g.Enqueue(meme)
+		}
+	}
 }
 
 func (g *Generator) Enqueue(meme store.Meme) {

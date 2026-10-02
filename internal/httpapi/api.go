@@ -128,11 +128,14 @@ func (a *API) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if mimeType != "image/webp" {
-		if bounds, _, decodeErr := image.DecodeConfig(bytes.NewReader(data)); decodeErr == nil {
-			if bounds.Width > 12000 || bounds.Height > 12000 {
-				badRequest(w, "image dimensions are too large")
-				return
-			}
+		bounds, _, decodeErr := image.DecodeConfig(bytes.NewReader(data))
+		if decodeErr != nil {
+			badRequest(w, "the image could not be decoded")
+			return
+		}
+		if bounds.Width > 12000 || bounds.Height > 12000 {
+			badRequest(w, "image dimensions are too large")
+			return
 		}
 	}
 

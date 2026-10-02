@@ -146,6 +146,25 @@ func (s *Store) Get(ctx context.Context, id string) (Meme, error) {
 	return meme, nil
 }
 
+func (s *Store) Pending(ctx context.Context) ([]Meme, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, filename, mime_type, description, description_status, description_generated, created_at FROM memes WHERE description_status = 'pending' ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list pending descriptions: %w", err)
+	}
+	defer rows.Close()
+	pending := []Meme{}
+	for rows.Next() {
+		var meme Meme
+		var generated int
+		if err := rows.Scan(&meme.ID, &meme.Filename, &meme.MimeType, &meme.Description, &meme.DescriptionStatus, &generated, &meme.CreatedAt); err != nil {
+			return nil, err
+		}
+		meme.DescriptionGenerated = generated != 0
+		pending = append(pending, meme)
+	}
+	return pending, rows.Err()
+}
+
 func (s *Store) UpdateDescription(ctx context.Context, id, description, status string, generated bool) error {
 	result, err := s.db.ExecContext(ctx, `UPDATE memes SET description = ?, description_status = ?, description_generated = ?, updated_at = ? WHERE id = ?`,
 		description, status, boolInt(generated), time.Now().UTC().Format(time.RFC3339Nano), id)
