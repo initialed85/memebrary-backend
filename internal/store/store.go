@@ -480,6 +480,7 @@ func (s *Store) UpdateDescription(ctx context.Context, id, description, status s
 // UpdateGeneratedContent stores the result of one vision request and merges
 // generated tags with existing uploader tags.
 func (s *Store) UpdateGeneratedContent(ctx context.Context, id, description, status string, generated bool, tags []string) error {
+	description = cleanStoredDescription(description)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin generated content update: %w", err)
