@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
@@ -120,14 +121,39 @@ var fillerWords = map[string]struct{}{
 	"you": {}, "your": {}, "yours": {}, "yourself": {}, "yourselves": {},
 }
 
+var placeholderTags = map[string]struct{}{
+	"na": {}, "n-a": {}, "none": {}, "null": {}, "unknown": {}, "placeholder": {},
+}
+
 func IsFillerWord(value string) bool {
 	_, ok := fillerWords[strings.ToLower(strings.TrimPrefix(strings.TrimSpace(value), "#"))]
 	return ok
 }
 
+func IsNoisyTag(value string) bool {
+	value = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(value), "#"))
+	if value == "" || IsFillerWord(value) {
+		return true
+	}
+	if _, ok := placeholderTags[value]; ok {
+		return true
+	}
+	allDigits := true
+	for _, r := range value {
+		if !unicode.IsDigit(r) {
+			allDigits = false
+			break
+		}
+	}
+	return allDigits
+}
+
 func (s *Store) pruneFillerTags(ctx context.Context) error {
-	words := make([]string, 0, len(fillerWords))
+	words := make([]string, 0, len(fillerWords)+len(placeholderTags))
 	for word := range fillerWords {
+		words = append(words, word)
+	}
+	for word := range placeholderTags {
 		words = append(words, word)
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(words)), ",")
@@ -138,7 +164,31 @@ func (s *Store) pruneFillerTags(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM meme_tags WHERE tag_id IN (SELECT id FROM tags WHERE name IN (`+placeholders+`))`, args...); err != nil {
 		return fmt.Errorf("prune filler tags: %w", err)
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM meme_tags)`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name FROM tags`)
+	if err != nil {
+		return err
+	}
+	noisyIDs := []int64{}
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			rows.Close()
+			return err
+		}
+		if IsNoisyTag(name) {
+			noisyIDs = append(noisyIDs, id)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range noisyIDs {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM meme_tags WHERE tag_id = ?`, id); err != nil {
+			return err
+		}
+	}
+	_, err = s.db.ExecContext(ctx, `DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM meme_tags)`)
 	return err
 }
 
@@ -293,8 +343,8 @@ func (s *Store) Get(ctx context.Context, id string) (Meme, error) {
 	return meme, nil
 }
 
-func (s *Store) UnprocessedMetadata(ctx context.Context) ([]Meme, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, filename, original_name, mime_type, size, description, description_status, description_generated, sort_order, metadata_version, created_at FROM memes WHERE metadata_version < 2 ORDER BY sort_order DESC`)
+func (s *Store) AllMetadata(ctx context.Context) ([]Meme, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, filename, original_name, mime_type, size, description, description_status, description_generated, sort_order, metadata_version, created_at FROM memes ORDER BY sort_order DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list unprocessed metadata: %w", err)
 	}

@@ -69,8 +69,8 @@ func (g *Generator) Start(ctx context.Context) {
 		}
 	}
 	if g.reprocessExisting {
-		if unprocessed, err := g.store.UnprocessedMetadata(ctx); err == nil {
-			for _, meme := range unprocessed {
+		if allMemes, err := g.store.AllMetadata(ctx); err == nil {
+			for _, meme := range allMemes {
 				g.Enqueue(meme)
 			}
 		}
@@ -269,7 +269,7 @@ func cleanTextTags(tags []string) []string {
 		kept := make([]string, 0, len(words))
 		for _, word := range words {
 			word = strings.Trim(word, ".,!?;:'\"()[]{}")
-			if word != "" && !store.IsFillerWord(word) {
+			if word != "" && !store.IsNoisyTag(word) {
 				kept = append(kept, word)
 			}
 		}
@@ -286,7 +286,7 @@ func cleanTags(tags []string, max int) []string {
 	for _, raw := range tags {
 		tag := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(raw, "#")))
 		tag = strings.ReplaceAll(tag, " ", "-")
-		if tag == "" || seen[tag] || len(result) >= max || len([]rune(tag)) > 40 {
+		if tag == "" || seen[tag] || store.IsNoisyTag(tag) || len(result) >= max || len([]rune(tag)) > 40 {
 			continue
 		}
 		valid := true
