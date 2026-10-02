@@ -37,7 +37,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer dataStore.Close()
-	generator := describe.New(cfg.AIBaseURL, cfg.AIModel, cfg.AIAPIKey, dataStore)
+	generator := describe.New(cfg.AIBaseURL, cfg.AIModel, cfg.AIAPIKey, dataStore, cfg.ReprocessExisting)
 	generator.Start(ctx)
 	api := httpapi.New(dataStore, generator, cfg.MediaDir, cfg.MaxUploadSize, cfg.CORSOrigin, logger)
 	server := &http.Server{

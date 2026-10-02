@@ -18,27 +18,30 @@ import (
 )
 
 type Generator struct {
-	baseURL string
-	model   string
-	apiKey  string
-	client  *http.Client
-	store   *store.Store
-	jobs    chan store.Meme
+	baseURL           string
+	model             string
+	apiKey            string
+	client            *http.Client
+	store             *store.Store
+	reprocessExisting bool
+	jobs              chan store.Meme
 }
 
 type GeneratedContent struct {
 	Description string   `json:"description"`
 	Hashtags    []string `json:"hashtags"`
+	TextTags    []string `json:"text_tags"`
 }
 
-func New(baseURL, model, apiKey string, dataStore *store.Store) *Generator {
+func New(baseURL, model, apiKey string, dataStore *store.Store, reprocessExisting bool) *Generator {
 	return &Generator{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		model:   model,
-		apiKey:  apiKey,
-		client:  &http.Client{Timeout: 90 * time.Second},
-		store:   dataStore,
-		jobs:    make(chan store.Meme, 64),
+		baseURL:           strings.TrimRight(baseURL, "/"),
+		model:             model,
+		apiKey:            apiKey,
+		client:            &http.Client{Timeout: 90 * time.Second},
+		store:             dataStore,
+		reprocessExisting: reprocessExisting,
+		jobs:              make(chan store.Meme, 64),
 	}
 }
 
@@ -63,6 +66,13 @@ func (g *Generator) Start(ctx context.Context) {
 	if pending, err := g.store.Pending(ctx); err == nil {
 		for _, meme := range pending {
 			g.Enqueue(meme)
+		}
+	}
+	if g.reprocessExisting {
+		if unprocessed, err := g.store.UnprocessedMetadata(ctx); err == nil {
+			for _, meme := range unprocessed {
+				g.Enqueue(meme)
+			}
 		}
 	}
 }
@@ -96,9 +106,9 @@ func (g *Generator) generate(ctx context.Context, meme store.Meme) {
 		description = cleanText(result.Description)
 		generatedDescription = description != ""
 	}
-	generatedTags := []string{}
+	generatedTags := cleanTags(result.TextTags, 32)
 	if len(meme.Tags) == 0 {
-		generatedTags = cleanTags(result.Hashtags)
+		generatedTags = append(cleanTags(result.Hashtags, 8), generatedTags...)
 	}
 	// A missing description is still a failed generation. Any useful tags are
 	// kept, so a retry can focus on the remaining missing field.
@@ -120,9 +130,9 @@ var osReadFile = func(name string) ([]byte, error) { return os.ReadFile(name) }
 
 func (g *Generator) request(ctx context.Context, mimeType string, image []byte, existingDescription string, existingTags []string) (GeneratedContent, error) {
 	imageURL := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(image)
-	instruction := `Return only one valid JSON object, with exactly these fields: {"description":"one concise sentence","hashtags":["short-tag"]}.
-Describe what is visibly happening in the image and include readable meme text when useful. Hashtags must be 3-6 short lowercase words, without #, spaces, punctuation, or explanations. Prefer useful visual or meme-context tags over generic tags.
-If an existing description is supplied, copy it exactly into description. If existing hashtags are supplied, copy them exactly into hashtags. Fill only the missing metadata.`
+	instruction := `Return only one valid JSON object, with exactly these fields: {"description":"one concise sentence","hashtags":["short-tag"],"text_tags":["visible-word"]}.
+Describe what is visibly happening in the image. Hashtags must be 3-6 short lowercase visual or meme-context tags, without # or explanations. text_tags must contain every clearly readable word or short phrase visible in the image, kept as close to the exact spelling as possible, lowercase, without punctuation. Do not invent text and do not omit readable words. Use an empty array only when no text is visible.
+If an existing description is supplied, copy it exactly into description. If existing hashtags are supplied, copy them exactly into hashtags. Always inspect the image for text_tags.`
 	payload := map[string]any{
 		"model": g.model,
 		"messages": []any{
@@ -143,7 +153,7 @@ If an existing description is supplied, copy it exactly into description. If exi
 		"chat_template_kwargs": map[string]any{"enable_thinking": false},
 		"response_format":      map[string]string{"type": "json_object"},
 		"temperature":          0.2,
-		"max_tokens":           160,
+		"max_tokens":           240,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -210,7 +220,8 @@ func parseContent(raw json.RawMessage) (GeneratedContent, error) {
 
 func normalizeResult(result GeneratedContent) GeneratedContent {
 	result.Description = cleanText(result.Description)
-	result.Hashtags = cleanTags(result.Hashtags)
+	result.Hashtags = cleanTags(result.Hashtags, 8)
+	result.TextTags = cleanTags(result.TextTags, 32)
 	return result
 }
 
@@ -251,13 +262,13 @@ func cleanText(text string) string {
 	return text
 }
 
-func cleanTags(tags []string) []string {
+func cleanTags(tags []string, max int) []string {
 	seen := map[string]bool{}
-	result := make([]string, 0, 6)
+	result := make([]string, 0, max)
 	for _, raw := range tags {
 		tag := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(raw, "#")))
 		tag = strings.ReplaceAll(tag, " ", "-")
-		if tag == "" || seen[tag] || len(result) >= 8 || len([]rune(tag)) > 40 {
+		if tag == "" || seen[tag] || len(result) >= max || len([]rune(tag)) > 40 {
 			continue
 		}
 		valid := true

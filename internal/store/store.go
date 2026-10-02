@@ -26,6 +26,7 @@ type Meme struct {
 	Tags                 []string `json:"tags"`
 	CreatedAt            string   `json:"created_at"`
 	SortOrder            int64    `json:"-"`
+	MetadataVersion      int      `json:"-"`
 }
 
 type ListResult struct {
@@ -69,6 +70,7 @@ CREATE TABLE IF NOT EXISTS memes (
     description_status TEXT NOT NULL DEFAULT 'none',
     description_generated INTEGER NOT NULL DEFAULT 0,
     sort_order INTEGER NOT NULL DEFAULT 0,
+    metadata_version INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -89,6 +91,39 @@ CREATE INDEX IF NOT EXISTS meme_tags_tag_idx ON meme_tags(tag_id, meme_id);
 	}
 	if err := s.ensureSortOrder(ctx); err != nil {
 		return err
+	}
+	if err := s.ensureMetadataVersion(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureMetadataVersion(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(memes)`)
+	if err != nil {
+		return fmt.Errorf("inspect metadata schema: %w", err)
+	}
+	hasColumn := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "metadata_version" {
+			hasColumn = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !hasColumn {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE memes ADD COLUMN metadata_version INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add metadata version: %w", err)
+		}
 	}
 	return nil
 }
@@ -167,10 +202,10 @@ func (s *Store) Create(ctx context.Context, meme Meme, tags []string) error {
 		}
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO memes
-		(id, filename, original_name, mime_type, size, description, description_status, description_generated, sort_order, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, filename, original_name, mime_type, size, description, description_status, description_generated, sort_order, metadata_version, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		meme.ID, meme.Filename, meme.OriginalName, meme.MimeType, meme.Size, meme.Description,
-		meme.DescriptionStatus, boolInt(meme.DescriptionGenerated), meme.SortOrder, meme.CreatedAt, meme.CreatedAt)
+		meme.DescriptionStatus, boolInt(meme.DescriptionGenerated), meme.SortOrder, 0, meme.CreatedAt, meme.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("insert meme: %w", err)
 	}
@@ -197,9 +232,9 @@ func (s *Store) Get(ctx context.Context, id string) (Meme, error) {
 	var meme Meme
 	var generated int
 	err := s.db.QueryRowContext(ctx, `SELECT id, filename, original_name, mime_type, size, description,
-		description_status, description_generated, sort_order, created_at FROM memes WHERE id = ?`, id).
+		description_status, description_generated, sort_order, metadata_version, created_at FROM memes WHERE id = ?`, id).
 		Scan(&meme.ID, &meme.Filename, &meme.OriginalName, &meme.MimeType, &meme.Size, &meme.Description,
-			&meme.DescriptionStatus, &generated, &meme.SortOrder, &meme.CreatedAt)
+			&meme.DescriptionStatus, &generated, &meme.SortOrder, &meme.MetadataVersion, &meme.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Meme{}, ErrNotFound
 	}
@@ -212,6 +247,29 @@ func (s *Store) Get(ctx context.Context, id string) (Meme, error) {
 		return Meme{}, err
 	}
 	return meme, nil
+}
+
+func (s *Store) UnprocessedMetadata(ctx context.Context) ([]Meme, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, filename, original_name, mime_type, size, description, description_status, description_generated, sort_order, metadata_version, created_at FROM memes WHERE metadata_version < 2 ORDER BY sort_order DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list unprocessed metadata: %w", err)
+	}
+	defer rows.Close()
+	result := []Meme{}
+	for rows.Next() {
+		var meme Meme
+		var generated int
+		if err := rows.Scan(&meme.ID, &meme.Filename, &meme.OriginalName, &meme.MimeType, &meme.Size, &meme.Description, &meme.DescriptionStatus, &generated, &meme.SortOrder, &meme.MetadataVersion, &meme.CreatedAt); err != nil {
+			return nil, err
+		}
+		meme.DescriptionGenerated = generated != 0
+		meme.Tags, err = s.tags(ctx, meme.ID)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, meme)
+	}
+	return result, rows.Err()
 }
 
 func (s *Store) Pending(ctx context.Context) ([]Meme, error) {
@@ -249,9 +307,8 @@ func (s *Store) UpdateDescription(ctx context.Context, id, description, status s
 	return nil
 }
 
-// UpdateGeneratedContent stores the result of one vision request. Generated
-// hashtags are only attached when the meme still has no tags; this prevents a
-// retry or a slow worker from overwriting tags supplied by the uploader.
+// UpdateGeneratedContent stores the result of one vision request and merges
+// generated tags with existing uploader tags.
 func (s *Store) UpdateGeneratedContent(ctx context.Context, id, description, status string, generated bool, tags []string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -259,7 +316,7 @@ func (s *Store) UpdateGeneratedContent(ctx context.Context, id, description, sta
 	}
 	defer tx.Rollback()
 
-	result, err := tx.ExecContext(ctx, `UPDATE memes SET description = ?, description_status = ?, description_generated = ?, updated_at = ? WHERE id = ?`,
+	result, err := tx.ExecContext(ctx, `UPDATE memes SET description = ?, description_status = ?, description_generated = ?, metadata_version = 2, updated_at = ? WHERE id = ?`,
 		description, status, boolInt(generated), time.Now().UTC().Format(time.RFC3339Nano), id)
 	if err != nil {
 		return fmt.Errorf("update generated content: %w", err)
@@ -272,18 +329,12 @@ func (s *Store) UpdateGeneratedContent(ctx context.Context, id, description, sta
 		return ErrNotFound
 	}
 	if len(tags) > 0 {
-		var existing int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM meme_tags WHERE meme_id = ?`, id).Scan(&existing); err != nil {
-			return fmt.Errorf("check existing tags: %w", err)
-		}
-		if existing == 0 {
-			for _, tag := range tags {
-				if _, err := tx.ExecContext(ctx, `INSERT INTO tags(name) VALUES (?) ON CONFLICT(name) DO NOTHING`, tag); err != nil {
-					return fmt.Errorf("insert generated tag: %w", err)
-				}
-				if _, err := tx.ExecContext(ctx, `INSERT INTO meme_tags(meme_id, tag_id) SELECT ?, id FROM tags WHERE name = ? ON CONFLICT DO NOTHING`, id, tag); err != nil {
-					return fmt.Errorf("link generated tag: %w", err)
-				}
+		for _, tag := range tags {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO tags(name) VALUES (?) ON CONFLICT(name) DO NOTHING`, tag); err != nil {
+				return fmt.Errorf("insert generated tag: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO meme_tags(meme_id, tag_id) SELECT ?, id FROM tags WHERE name = ? ON CONFLICT DO NOTHING`, id, tag); err != nil {
+				return fmt.Errorf("link generated tag: %w", err)
 			}
 		}
 	}

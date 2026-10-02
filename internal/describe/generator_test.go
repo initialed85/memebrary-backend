@@ -33,7 +33,7 @@ func TestRequestProducesStructuredDescriptionAndHashtags(t *testing.T) {
 			t.Errorf("unexpected multimodal messages: %#v", payload.Messages)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"description\":\"A reaction image.\",\"hashtags\":[\"reaction\",\"funny\",\"reaction\"]}"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"description\":\"A reaction image.\",\"hashtags\":[\"reaction\",\"funny\",\"reaction\"],\"text_tags\":[\"HELLO\",\"world\"]}"}}]}`))
 	}))
 	defer server.Close()
 
@@ -42,12 +42,12 @@ func TestRequestProducesStructuredDescriptionAndHashtags(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dataStore.Close()
-	generator := New(server.URL, "test-model", "", dataStore)
+	generator := New(server.URL, "test-model", "", dataStore, false)
 	result, err := generator.request(context.Background(), "image/png", []byte("image"), "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Description != "A reaction image." || len(result.Hashtags) != 2 || result.Hashtags[0] != "reaction" {
+	if result.Description != "A reaction image." || len(result.Hashtags) != 2 || result.Hashtags[0] != "reaction" || len(result.TextTags) != 2 || result.TextTags[0] != "hello" {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }

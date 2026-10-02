@@ -78,8 +78,8 @@ func TestCreateListAndCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(updated.Tags) != 2 || updated.Tags[0] != "dogs" || updated.Tags[1] != "reaction" {
-		t.Fatalf("generated tags were overwritten: %+v", updated.Tags)
+	if len(updated.Tags) != 3 || updated.Tags[0] != "different" || updated.Tags[1] != "dogs" || updated.Tags[2] != "reaction" {
+		t.Fatalf("generated tags were not merged: %+v", updated.Tags)
 	}
 	if deleted, err := s.Delete(ctx, third.ID); err != nil || deleted.ID != third.ID {
 		t.Fatalf("delete meme: meme=%+v err=%v", deleted, err)

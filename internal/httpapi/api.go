@@ -161,7 +161,9 @@ func (a *API) upload(w http.ResponseWriter, r *http.Request) {
 	description := strings.TrimSpace(r.FormValue("description"))
 	tags := parseTags(r.FormValue("tags"))
 	status := "none"
-	if a.generator.Enabled() && (description == "" || len(tags) == 0) {
+	if a.generator.Enabled() {
+		// The vision pass now always extracts visible words for searchable tags,
+		// even when the uploader supplied their own tags/description.
 		status = "pending"
 	}
 	meme := store.Meme{
