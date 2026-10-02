@@ -417,9 +417,19 @@ func (s *Store) Delete(ctx context.Context, id string) (Meme, error) {
 }
 
 // Move places id immediately before beforeID in the current display order.
-// An empty beforeID moves the meme to the end. Re-numbering keeps future
-// inserts and cursor pagination deterministic after repeated rearrangements.
+// An empty beforeID moves the meme to the end.
 func (s *Store) Move(ctx context.Context, id, beforeID string) error {
+	return s.move(ctx, id, beforeID, "")
+}
+
+// MoveAfter places id immediately after afterID in the current display order.
+func (s *Store) MoveAfter(ctx context.Context, id, afterID string) error {
+	return s.move(ctx, id, "", afterID)
+}
+
+// Re-numbering keeps future inserts and cursor pagination deterministic after
+// repeated rearrangements.
+func (s *Store) move(ctx context.Context, id, beforeID, afterID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin meme move: %w", err)
@@ -459,6 +469,17 @@ func (s *Store) Move(ctx context.Context, id, beforeID string) error {
 		for index, currentID := range ids {
 			if currentID == beforeID {
 				to = index
+				break
+			}
+		}
+		if to < 0 {
+			return ErrNotFound
+		}
+	} else if afterID != "" {
+		to = -1
+		for index, currentID := range ids {
+			if currentID == afterID {
+				to = index + 1
 				break
 			}
 		}

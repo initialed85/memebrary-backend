@@ -248,16 +248,27 @@ func (a *API) memeAction(w http.ResponseWriter, r *http.Request) {
 func (a *API) moveMeme(w http.ResponseWriter, r *http.Request, id string) {
 	var input struct {
 		BeforeID string `json:"before_id"`
+		AfterID  string `json:"after_id"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
 		badRequest(w, "invalid move request")
 		return
 	}
-	if input.BeforeID == id {
-		badRequest(w, "a meme cannot be moved before itself")
+	if input.BeforeID != "" && input.AfterID != "" {
+		badRequest(w, "provide either before_id or after_id, not both")
 		return
 	}
-	if err := a.store.Move(r.Context(), id, input.BeforeID); errors.Is(err, store.ErrNotFound) {
+	if input.BeforeID == id || input.AfterID == id {
+		badRequest(w, "a meme cannot be moved relative to itself")
+		return
+	}
+	var moveErr error
+	if input.AfterID != "" {
+		moveErr = a.store.MoveAfter(r.Context(), id, input.AfterID)
+	} else {
+		moveErr = a.store.Move(r.Context(), id, input.BeforeID)
+	}
+	if err := moveErr; errors.Is(err, store.ErrNotFound) {
 		notFound(w)
 		return
 	} else if err != nil {
