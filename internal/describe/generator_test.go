@@ -52,6 +52,13 @@ func TestRequestProducesStructuredDescriptionAndHashtags(t *testing.T) {
 	}
 }
 
+func TestTextTagsSkipFillerWords(t *testing.T) {
+	result := cleanTextTags([]string{"the", "we are fucked", "out of office", "OpenAI"})
+	if len(result) != 3 || result[0] != "fucked" || result[1] != "office" || result[2] != "openai" {
+		t.Fatalf("unexpected text tags: %#v", result)
+	}
+}
+
 func TestParseContentAcceptsMarkdownWrappedJSON(t *testing.T) {
 	result, err := parseContent(json.RawMessage("```json\n{\"description\":\"A cat.\",\"hashtags\":[\"#Cats\",\"cute cats\"]}\n```"))
 	if err != nil {

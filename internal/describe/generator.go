@@ -106,7 +106,7 @@ func (g *Generator) generate(ctx context.Context, meme store.Meme) {
 		description = cleanText(result.Description)
 		generatedDescription = description != ""
 	}
-	generatedTags := cleanTags(result.TextTags, 32)
+	generatedTags := cleanTextTags(result.TextTags)
 	if len(meme.Tags) == 0 {
 		generatedTags = append(cleanTags(result.Hashtags, 8), generatedTags...)
 	}
@@ -221,7 +221,7 @@ func parseContent(raw json.RawMessage) (GeneratedContent, error) {
 func normalizeResult(result GeneratedContent) GeneratedContent {
 	result.Description = cleanText(result.Description)
 	result.Hashtags = cleanTags(result.Hashtags, 8)
-	result.TextTags = cleanTags(result.TextTags, 32)
+	result.TextTags = cleanTextTags(result.TextTags)
 	return result
 }
 
@@ -260,6 +260,24 @@ func cleanText(text string) string {
 		text = text[:500]
 	}
 	return text
+}
+
+func cleanTextTags(tags []string) []string {
+	meaningful := make([]string, 0, len(tags))
+	for _, raw := range tags {
+		words := strings.FieldsFunc(strings.ToLower(raw), func(r rune) bool { return unicode.IsSpace(r) || r == '-' || r == '_' })
+		kept := make([]string, 0, len(words))
+		for _, word := range words {
+			word = strings.Trim(word, ".,!?;:'\"()[]{}")
+			if word != "" && !store.IsFillerWord(word) {
+				kept = append(kept, word)
+			}
+		}
+		if len(kept) > 0 {
+			meaningful = append(meaningful, strings.Join(kept, "-"))
+		}
+	}
+	return cleanTags(meaningful, 32)
 }
 
 func cleanTags(tags []string, max int) []string {

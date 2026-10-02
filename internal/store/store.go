@@ -95,7 +95,51 @@ CREATE INDEX IF NOT EXISTS meme_tags_tag_idx ON meme_tags(tag_id, meme_id);
 	if err := s.ensureMetadataVersion(ctx); err != nil {
 		return err
 	}
+	if err := s.pruneFillerTags(ctx); err != nil {
+		return err
+	}
 	return nil
+}
+
+var fillerWords = map[string]struct{}{
+	"a": {}, "about": {}, "above": {}, "after": {}, "again": {}, "against": {}, "all": {}, "am": {}, "an": {}, "and": {}, "any": {}, "are": {}, "as": {}, "at": {},
+	"be": {}, "because": {}, "been": {}, "before": {}, "being": {}, "below": {}, "between": {}, "both": {}, "but": {}, "by": {},
+	"can": {}, "could": {}, "did": {}, "do": {}, "does": {}, "doing": {}, "down": {}, "during": {},
+	"each": {}, "few": {}, "for": {}, "from": {}, "further": {},
+	"had": {}, "has": {}, "have": {}, "having": {}, "he": {}, "her": {}, "here": {}, "hers": {}, "herself": {}, "him": {}, "himself": {}, "his": {}, "how": {},
+	"i": {}, "if": {}, "in": {}, "into": {}, "is": {}, "it": {}, "its": {}, "itself": {},
+	"just": {},
+	"me":   {}, "more": {}, "most": {}, "my": {}, "myself": {},
+	"no": {}, "nor": {}, "not": {}, "now": {},
+	"of": {}, "off": {}, "on": {}, "once": {}, "only": {}, "or": {}, "other": {}, "our": {}, "ours": {}, "ourselves": {}, "out": {}, "over": {}, "own": {},
+	"same": {}, "she": {}, "should": {}, "so": {}, "some": {}, "such": {},
+	"than": {}, "that": {}, "the": {}, "their": {}, "theirs": {}, "them": {}, "themselves": {}, "then": {}, "there": {}, "these": {}, "they": {}, "this": {}, "those": {}, "through": {}, "to": {}, "too": {},
+	"under": {}, "until": {}, "up": {},
+	"very": {},
+	"was":  {}, "we": {}, "were": {}, "what": {}, "when": {}, "where": {}, "which": {}, "while": {}, "who": {}, "whom": {}, "why": {}, "will": {}, "with": {}, "would": {},
+	"you": {}, "your": {}, "yours": {}, "yourself": {}, "yourselves": {},
+}
+
+func IsFillerWord(value string) bool {
+	_, ok := fillerWords[strings.ToLower(strings.TrimPrefix(strings.TrimSpace(value), "#"))]
+	return ok
+}
+
+func (s *Store) pruneFillerTags(ctx context.Context) error {
+	words := make([]string, 0, len(fillerWords))
+	for word := range fillerWords {
+		words = append(words, word)
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(words)), ",")
+	args := make([]any, len(words))
+	for i, word := range words {
+		args[i] = word
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM meme_tags WHERE tag_id IN (SELECT id FROM tags WHERE name IN (`+placeholders+`))`, args...); err != nil {
+		return fmt.Errorf("prune filler tags: %w", err)
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM meme_tags)`)
+	return err
 }
 
 func (s *Store) ensureMetadataVersion(ctx context.Context) error {
