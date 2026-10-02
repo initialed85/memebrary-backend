@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/initialed85/memebrary-backend/internal/store"
 )
@@ -23,6 +24,11 @@ type Generator struct {
 	client  *http.Client
 	store   *store.Store
 	jobs    chan store.Meme
+}
+
+type GeneratedContent struct {
+	Description string   `json:"description"`
+	Hashtags    []string `json:"hashtags"`
 }
 
 func New(baseURL, model, apiKey string, dataStore *store.Store) *Generator {
@@ -68,40 +74,66 @@ func (g *Generator) Enqueue(meme store.Meme) {
 	select {
 	case g.jobs <- meme:
 	default:
-		_ = g.store.UpdateDescription(context.Background(), meme.ID, "", "failed", false)
+		_ = g.store.UpdateGeneratedContent(context.Background(), meme.ID, meme.Description, "failed", meme.DescriptionGenerated, nil)
 	}
 }
 
 func (g *Generator) generate(ctx context.Context, meme store.Meme) {
 	imageBytes, err := osReadFile(meme.Filename)
 	if err != nil {
-		_ = g.store.UpdateDescription(context.Background(), meme.ID, "", "failed", false)
+		g.markFailed(meme)
 		return
 	}
-	description, err := g.request(ctx, meme.MimeType, imageBytes)
-	if err != nil || description == "" {
-		_ = g.store.UpdateDescription(context.Background(), meme.ID, "", "failed", false)
+	result, err := g.request(ctx, meme.MimeType, imageBytes, meme.Description, meme.Tags)
+	if err != nil {
+		g.markFailed(meme)
 		return
 	}
-	_ = g.store.UpdateDescription(context.Background(), meme.ID, description, "ready", true)
+
+	description := strings.TrimSpace(meme.Description)
+	generatedDescription := false
+	if description == "" {
+		description = cleanText(result.Description)
+		generatedDescription = description != ""
+	}
+	generatedTags := []string{}
+	if len(meme.Tags) == 0 {
+		generatedTags = cleanTags(result.Hashtags)
+	}
+	// A missing description is still a failed generation. Any useful tags are
+	// kept, so a retry can focus on the remaining missing field.
+	status := "ready"
+	if strings.TrimSpace(meme.Description) == "" && description == "" {
+		status = "failed"
+	}
+	if err := g.store.UpdateGeneratedContent(context.Background(), meme.ID, description, status, generatedDescription, generatedTags); err != nil {
+		return
+	}
+}
+
+func (g *Generator) markFailed(meme store.Meme) {
+	_ = g.store.UpdateGeneratedContent(context.Background(), meme.ID, meme.Description, "failed", meme.DescriptionGenerated, nil)
 }
 
 // osReadFile is a variable so the generator remains straightforward to test.
 var osReadFile = func(name string) ([]byte, error) { return os.ReadFile(name) }
 
-func (g *Generator) request(ctx context.Context, mimeType string, image []byte) (string, error) {
+func (g *Generator) request(ctx context.Context, mimeType string, image []byte, existingDescription string, existingTags []string) (GeneratedContent, error) {
 	imageURL := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(image)
+	instruction := `Return only one valid JSON object, with exactly these fields: {"description":"one concise sentence","hashtags":["short-tag"]}.
+Describe what is visibly happening in the image and include readable meme text when useful. Hashtags must be 3-6 short lowercase words, without #, spaces, punctuation, or explanations. Prefer useful visual or meme-context tags over generic tags.
+If an existing description is supplied, copy it exactly into description. If existing hashtags are supplied, copy them exactly into hashtags. Fill only the missing metadata.`
 	payload := map[string]any{
 		"model": g.model,
 		"messages": []any{
 			map[string]any{
 				"role":    "system",
-				"content": "You describe images for a private meme library. Reply with exactly one concise, literal sentence describing what is visible and any readable text. Do not mention that you are an AI. Do not add a preamble or quotation marks.",
+				"content": "You analyze images for a private meme library. Never mention that you are an AI and never wrap JSON in markdown.",
 			},
 			map[string]any{
 				"role": "user",
 				"content": []any{
-					map[string]any{"type": "text", "text": "Describe this meme in one short sentence."},
+					map[string]any{"type": "text", "text": instruction + "\nExisting description: " + strings.TrimSpace(existingDescription) + "\nExisting hashtags: " + strings.Join(existingTags, ", ")},
 					map[string]any{"type": "image_url", "image_url": map[string]any{"url": imageURL}},
 				},
 			},
@@ -109,16 +141,17 @@ func (g *Generator) request(ctx context.Context, mimeType string, image []byte) 
 		// Qwen-style models otherwise spend the whole short completion budget in
 		// hidden reasoning and leave message.content empty.
 		"chat_template_kwargs": map[string]any{"enable_thinking": false},
+		"response_format":      map[string]string{"type": "json_object"},
 		"temperature":          0.2,
-		"max_tokens":           100,
+		"max_tokens":           160,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", err
+		return GeneratedContent{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return GeneratedContent{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if g.apiKey != "" {
@@ -126,15 +159,15 @@ func (g *Generator) request(ctx context.Context, mimeType string, image []byte) 
 	}
 	response, err := g.client.Do(req)
 	if err != nil {
-		return "", err
+		return GeneratedContent{}, err
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024))
 	if err != nil {
-		return "", err
+		return GeneratedContent{}, err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("description endpoint returned %s", response.Status)
+		return GeneratedContent{}, fmt.Errorf("description endpoint returned %s", response.Status)
 	}
 	var completion struct {
 		Choices []struct {
@@ -144,15 +177,42 @@ func (g *Generator) request(ctx context.Context, mimeType string, image []byte) 
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(responseBody, &completion); err != nil {
-		return "", err
+		return GeneratedContent{}, err
 	}
 	if len(completion.Choices) == 0 {
-		return "", fmt.Errorf("description endpoint returned no choices")
+		return GeneratedContent{}, fmt.Errorf("description endpoint returned no choices")
 	}
-	return cleanContent(completion.Choices[0].Message.Content), nil
+	return parseContent(completion.Choices[0].Message.Content)
 }
 
 var thinkBlock = regexp.MustCompile(`(?s)<think>.*?</think>`)
+
+func parseContent(raw json.RawMessage) (GeneratedContent, error) {
+	text := cleanContent(raw)
+	var result GeneratedContent
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		// Some compatible servers ignore response_format and add a tiny preamble.
+		start, end := strings.Index(text, "{"), strings.LastIndex(text, "}")
+		if start >= 0 && end > start {
+			if jsonErr := json.Unmarshal([]byte(text[start:end+1]), &result); jsonErr == nil {
+				return normalizeResult(result), nil
+			}
+		}
+		if text == "" {
+			return GeneratedContent{}, err
+		}
+		// Keep compatibility with a plain-sentence model response: the one call
+		// still produces a useful description even if it misses the JSON contract.
+		return GeneratedContent{Description: text}, nil
+	}
+	return normalizeResult(result), nil
+}
+
+func normalizeResult(result GeneratedContent) GeneratedContent {
+	result.Description = cleanText(result.Description)
+	result.Hashtags = cleanTags(result.Hashtags)
+	return result
+}
 
 func cleanContent(raw json.RawMessage) string {
 	var text string
@@ -167,13 +227,50 @@ func cleanContent(raw json.RawMessage) string {
 					text += part.Text
 				}
 			}
+		} else {
+			text = string(raw)
 		}
 	}
 	text = thinkBlock.ReplaceAllString(text, "")
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "```json") {
+		text = strings.TrimSpace(strings.TrimPrefix(text, "```json"))
+	} else if strings.HasPrefix(text, "```") {
+		text = strings.TrimSpace(strings.TrimPrefix(text, "```"))
+	}
+	text = strings.TrimSuffix(strings.TrimSpace(text), "```")
+	return strings.TrimSpace(text)
+}
+
+func cleanText(text string) string {
 	text = strings.TrimSpace(strings.Trim(text, "\"'"))
 	text = strings.Join(strings.Fields(text), " ")
 	if len(text) > 500 {
 		text = text[:500]
 	}
 	return text
+}
+
+func cleanTags(tags []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, 6)
+	for _, raw := range tags {
+		tag := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(raw, "#")))
+		tag = strings.ReplaceAll(tag, " ", "-")
+		if tag == "" || seen[tag] || len(result) >= 8 || len([]rune(tag)) > 40 {
+			continue
+		}
+		valid := true
+		for _, r := range tag {
+			if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_') {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			seen[tag] = true
+			result = append(result, tag)
+		}
+	}
+	return result
 }

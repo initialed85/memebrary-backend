@@ -44,4 +44,30 @@ func TestCreateListAndCursor(t *testing.T) {
 	if filtered.Total != 1 || len(filtered.Memes) != 1 || filtered.Memes[0].Tags[0] != "cats" {
 		t.Fatalf("unexpected filtered result: %+v", filtered)
 	}
+
+	third := Meme{ID: "00000000000000000000000000000003", Filename: "/tmp/three.png", OriginalName: "three.png", MimeType: "image/png", Size: 30, CreatedAt: "2026-01-01T00:00:00.000000003Z"}
+	if err := s.Create(ctx, third, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateGeneratedContent(ctx, third.ID, "A generated description.", "ready", true, []string{"reaction", "dogs"}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.Get(ctx, third.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Description != "A generated description." || !updated.DescriptionGenerated || len(updated.Tags) != 2 {
+		t.Fatalf("unexpected generated content: %+v", updated)
+	}
+	// A later worker/retry must not overwrite tags already supplied or generated.
+	if err := s.UpdateGeneratedContent(ctx, third.ID, "Another description.", "ready", true, []string{"different"}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err = s.Get(ctx, third.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Tags) != 2 || updated.Tags[0] != "dogs" || updated.Tags[1] != "reaction" {
+		t.Fatalf("generated tags were overwritten: %+v", updated.Tags)
+	}
 }

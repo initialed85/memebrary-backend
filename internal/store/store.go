@@ -181,6 +181,50 @@ func (s *Store) UpdateDescription(ctx context.Context, id, description, status s
 	return nil
 }
 
+// UpdateGeneratedContent stores the result of one vision request. Generated
+// hashtags are only attached when the meme still has no tags; this prevents a
+// retry or a slow worker from overwriting tags supplied by the uploader.
+func (s *Store) UpdateGeneratedContent(ctx context.Context, id, description, status string, generated bool, tags []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin generated content update: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `UPDATE memes SET description = ?, description_status = ?, description_generated = ?, updated_at = ? WHERE id = ?`,
+		description, status, boolInt(generated), time.Now().UTC().Format(time.RFC3339Nano), id)
+	if err != nil {
+		return fmt.Errorf("update generated content: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return ErrNotFound
+	}
+	if len(tags) > 0 {
+		var existing int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM meme_tags WHERE meme_id = ?`, id).Scan(&existing); err != nil {
+			return fmt.Errorf("check existing tags: %w", err)
+		}
+		if existing == 0 {
+			for _, tag := range tags {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO tags(name) VALUES (?) ON CONFLICT(name) DO NOTHING`, tag); err != nil {
+					return fmt.Errorf("insert generated tag: %w", err)
+				}
+				if _, err := tx.ExecContext(ctx, `INSERT INTO meme_tags(meme_id, tag_id) SELECT ?, id FROM tags WHERE name = ? ON CONFLICT DO NOTHING`, id, tag); err != nil {
+					return fmt.Errorf("link generated tag: %w", err)
+				}
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit generated content: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) List(ctx context.Context, limit int, cursor, tag string) (ListResult, error) {
 	if limit < 1 || limit > 100 {
 		limit = 40

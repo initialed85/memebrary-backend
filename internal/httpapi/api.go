@@ -161,7 +161,7 @@ func (a *API) upload(w http.ResponseWriter, r *http.Request) {
 	description := strings.TrimSpace(r.FormValue("description"))
 	tags := parseTags(r.FormValue("tags"))
 	status := "none"
-	if description == "" && a.generator.Enabled() {
+	if a.generator.Enabled() && (description == "" || len(tags) == 0) {
 		status = "pending"
 	}
 	meme := store.Meme{
@@ -218,13 +218,11 @@ func (a *API) memeAction(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "AI descriptions are not configured")
 		return
 	}
-	if err := a.store.UpdateDescription(r.Context(), meme.ID, "", "pending", false); err != nil {
+	if err := a.store.UpdateDescription(r.Context(), meme.ID, meme.Description, "pending", meme.DescriptionGenerated); err != nil {
 		serverError(w, err)
 		return
 	}
-	meme.Description = ""
 	meme.DescriptionStatus = "pending"
-	meme.DescriptionGenerated = false
 	a.generator.Enqueue(meme)
 	writeJSON(w, http.StatusAccepted, meme)
 }
@@ -324,6 +322,7 @@ func randomID() string {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
