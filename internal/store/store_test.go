@@ -38,12 +38,12 @@ func TestCreateListAndCursor(t *testing.T) {
 	if len(next.Memes) != 1 || next.Memes[0].ID != first.ID || next.NextCursor != "" {
 		t.Fatalf("unexpected second page: %+v", next)
 	}
-	filtered, err := s.List(ctx, 10, "", "cats")
+	filtered, err := s.List(ctx, 10, "", "cat")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if filtered.Total != 1 || len(filtered.Memes) != 1 || filtered.Memes[0].Tags[0] != "cats" {
-		t.Fatalf("unexpected filtered result: %+v", filtered)
+		t.Fatalf("unexpected partial filtered result: %+v", filtered)
 	}
 
 	third := Meme{ID: "00000000000000000000000000000003", Filename: "/tmp/three.png", OriginalName: "three.png", MimeType: "image/png", Size: 30, CreatedAt: "2026-01-01T00:00:00.000000003Z"}

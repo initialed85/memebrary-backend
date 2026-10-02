@@ -309,8 +309,8 @@ func (s *Store) List(ctx context.Context, limit int, cursor, tag string) (ListRe
 		args = append(args, cursorOrder, cursorOrder, cursorTime, cursorTime, cursorID)
 	}
 	if tag != "" {
-		where = append(where, `EXISTS (SELECT 1 FROM meme_tags filter_mt JOIN tags filter_t ON filter_t.id = filter_mt.tag_id WHERE filter_mt.meme_id = m.id AND filter_t.name = ?)`)
-		args = append(args, strings.ToLower(strings.TrimPrefix(tag, "#")))
+		where = append(where, `EXISTS (SELECT 1 FROM meme_tags filter_mt JOIN tags filter_t ON filter_t.id = filter_mt.tag_id WHERE filter_mt.meme_id = m.id AND filter_t.name LIKE ? ESCAPE '\')`)
+		args = append(args, tagPattern(tag))
 	}
 	args = append(args, limit+1)
 	query := `SELECT m.id, m.filename, m.original_name, m.mime_type, m.size, m.description,
@@ -366,9 +366,17 @@ func (s *Store) count(ctx context.Context, tag string) (int, error) {
 	if tag == "" {
 		err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memes`).Scan(&count)
 	} else {
-		err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memes m WHERE EXISTS (SELECT 1 FROM meme_tags mt JOIN tags t ON t.id = mt.tag_id WHERE mt.meme_id = m.id AND t.name = ?)`, strings.ToLower(strings.TrimPrefix(tag, "#"))).Scan(&count)
+		err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memes m WHERE EXISTS (SELECT 1 FROM meme_tags mt JOIN tags t ON t.id = mt.tag_id WHERE mt.meme_id = m.id AND t.name LIKE ? ESCAPE '\')`, tagPattern(tag)).Scan(&count)
 	}
 	return count, err
+}
+
+func tagPattern(tag string) string {
+	value := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(tag), "#"))
+	value = strings.ReplaceAll(value, `\`, `\`+`\`)
+	value = strings.ReplaceAll(value, `%`, `\`+`%`)
+	value = strings.ReplaceAll(value, `_`, `\`+`_`)
+	return `%` + value + `%`
 }
 
 func (s *Store) tags(ctx context.Context, memeID string) ([]string, error) {
