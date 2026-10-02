@@ -50,6 +50,16 @@ func TestCreateListAndCursor(t *testing.T) {
 	if err := s.Create(ctx, third, nil); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.Move(ctx, first.ID, third.ID); err != nil {
+		t.Fatal(err)
+	}
+	ordered, err := s.List(ctx, 10, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ordered.Memes) != 3 || ordered.Memes[0].ID != first.ID || ordered.Memes[1].ID != third.ID || ordered.Memes[2].ID != second.ID {
+		t.Fatalf("unexpected rearranged order: %+v", ordered.Memes)
+	}
 	if err := s.UpdateGeneratedContent(ctx, third.ID, "A generated description.", "ready", true, []string{"reaction", "dogs"}); err != nil {
 		t.Fatal(err)
 	}

@@ -46,7 +46,7 @@ func (a *API) Handler() http.Handler {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Vary", "Origin")
 				w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			}
 		}
 		if r.Method == http.MethodOptions {
@@ -209,6 +209,15 @@ func (a *API) memeAction(w http.ResponseWriter, r *http.Request) {
 		a.deleteMeme(w, r, parts[2])
 		return
 	}
+	if parts[3] == "order" {
+		if r.Method != http.MethodPatch {
+			w.Header().Set("Allow", "PATCH")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		a.moveMeme(w, r, parts[2])
+		return
+	}
 	if parts[3] != "describe" || r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -234,6 +243,28 @@ func (a *API) memeAction(w http.ResponseWriter, r *http.Request) {
 	meme.DescriptionStatus = "pending"
 	a.generator.Enqueue(meme)
 	writeJSON(w, http.StatusAccepted, meme)
+}
+
+func (a *API) moveMeme(w http.ResponseWriter, r *http.Request, id string) {
+	var input struct {
+		BeforeID string `json:"before_id"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		badRequest(w, "invalid move request")
+		return
+	}
+	if input.BeforeID == id {
+		badRequest(w, "a meme cannot be moved before itself")
+		return
+	}
+	if err := a.store.Move(r.Context(), id, input.BeforeID); errors.Is(err, store.ErrNotFound) {
+		notFound(w)
+		return
+	} else if err != nil {
+		serverError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) deleteMeme(w http.ResponseWriter, r *http.Request, id string) {

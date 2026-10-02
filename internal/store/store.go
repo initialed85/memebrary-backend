@@ -25,6 +25,7 @@ type Meme struct {
 	DescriptionGenerated bool     `json:"description_generated"`
 	Tags                 []string `json:"tags"`
 	CreatedAt            string   `json:"created_at"`
+	SortOrder            int64    `json:"-"`
 }
 
 type ListResult struct {
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS memes (
     description TEXT NOT NULL DEFAULT '',
     description_status TEXT NOT NULL DEFAULT 'none',
     description_generated INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -85,6 +87,67 @@ CREATE INDEX IF NOT EXISTS meme_tags_tag_idx ON meme_tags(tag_id, meme_id);
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate database: %w", err)
 	}
+	if err := s.ensureSortOrder(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureSortOrder(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(memes)`)
+	if err != nil {
+		return fmt.Errorf("inspect meme schema: %w", err)
+	}
+	hasSortOrder := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan meme schema: %w", err)
+		}
+		if name == "sort_order" {
+			hasSortOrder = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !hasSortOrder {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE memes ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add meme sort order: %w", err)
+		}
+	}
+	var zeroCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memes WHERE sort_order = 0`).Scan(&zeroCount); err != nil {
+		return err
+	}
+	if zeroCount == 0 {
+		return nil
+	}
+	ordered, err := s.db.QueryContext(ctx, `SELECT id FROM memes ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return err
+	}
+	ids := []string{}
+	for ordered.Next() {
+		var id string
+		if err := ordered.Scan(&id); err != nil {
+			ordered.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := ordered.Close(); err != nil {
+		return err
+	}
+	for index, id := range ids {
+		if _, err := s.db.ExecContext(ctx, `UPDATE memes SET sort_order = ? WHERE id = ?`, int64(len(ids)-index), id); err != nil {
+			return fmt.Errorf("backfill meme sort order: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -98,11 +161,16 @@ func (s *Store) Create(ctx context.Context, meme Meme, tags []string) error {
 	if meme.DescriptionStatus == "" {
 		meme.DescriptionStatus = "none"
 	}
+	if meme.SortOrder <= 0 {
+		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(sort_order), 0) + 1 FROM memes`).Scan(&meme.SortOrder); err != nil {
+			return fmt.Errorf("allocate meme sort order: %w", err)
+		}
+	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO memes
-		(id, filename, original_name, mime_type, size, description, description_status, description_generated, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, filename, original_name, mime_type, size, description, description_status, description_generated, sort_order, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		meme.ID, meme.Filename, meme.OriginalName, meme.MimeType, meme.Size, meme.Description,
-		meme.DescriptionStatus, boolInt(meme.DescriptionGenerated), meme.CreatedAt, meme.CreatedAt)
+		meme.DescriptionStatus, boolInt(meme.DescriptionGenerated), meme.SortOrder, meme.CreatedAt, meme.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("insert meme: %w", err)
 	}
@@ -129,9 +197,9 @@ func (s *Store) Get(ctx context.Context, id string) (Meme, error) {
 	var meme Meme
 	var generated int
 	err := s.db.QueryRowContext(ctx, `SELECT id, filename, original_name, mime_type, size, description,
-		description_status, description_generated, created_at FROM memes WHERE id = ?`, id).
+		description_status, description_generated, sort_order, created_at FROM memes WHERE id = ?`, id).
 		Scan(&meme.ID, &meme.Filename, &meme.OriginalName, &meme.MimeType, &meme.Size, &meme.Description,
-			&meme.DescriptionStatus, &generated, &meme.CreatedAt)
+			&meme.DescriptionStatus, &generated, &meme.SortOrder, &meme.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Meme{}, ErrNotFound
 	}
@@ -147,7 +215,7 @@ func (s *Store) Get(ctx context.Context, id string) (Meme, error) {
 }
 
 func (s *Store) Pending(ctx context.Context) ([]Meme, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, filename, mime_type, description, description_status, description_generated, created_at FROM memes WHERE description_status = 'pending' ORDER BY created_at`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, filename, mime_type, description, description_status, description_generated, sort_order, created_at FROM memes WHERE description_status = 'pending' ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("list pending descriptions: %w", err)
 	}
@@ -156,7 +224,7 @@ func (s *Store) Pending(ctx context.Context) ([]Meme, error) {
 	for rows.Next() {
 		var meme Meme
 		var generated int
-		if err := rows.Scan(&meme.ID, &meme.Filename, &meme.MimeType, &meme.Description, &meme.DescriptionStatus, &generated, &meme.CreatedAt); err != nil {
+		if err := rows.Scan(&meme.ID, &meme.Filename, &meme.MimeType, &meme.Description, &meme.DescriptionStatus, &generated, &meme.SortOrder, &meme.CreatedAt); err != nil {
 			return nil, err
 		}
 		meme.DescriptionGenerated = generated != 0
@@ -229,16 +297,16 @@ func (s *Store) List(ctx context.Context, limit int, cursor, tag string) (ListRe
 	if limit < 1 || limit > 100 {
 		limit = 40
 	}
-	cursorTime, cursorID, err := decodeCursor(cursor)
+	cursorOrder, cursorTime, cursorID, err := decodeCursor(cursor)
 	if err != nil {
 		return ListResult{}, err
 	}
 
 	where := []string{"1 = 1"}
-	args := make([]any, 0, 5)
+	args := make([]any, 0, 6)
 	if cursor != "" {
-		where = append(where, `(m.created_at < ? OR (m.created_at = ? AND m.id < ?))`)
-		args = append(args, cursorTime, cursorTime, cursorID)
+		where = append(where, `(m.sort_order < ? OR (m.sort_order = ? AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))))`)
+		args = append(args, cursorOrder, cursorOrder, cursorTime, cursorTime, cursorID)
 	}
 	if tag != "" {
 		where = append(where, `EXISTS (SELECT 1 FROM meme_tags filter_mt JOIN tags filter_t ON filter_t.id = filter_mt.tag_id WHERE filter_mt.meme_id = m.id AND filter_t.name = ?)`)
@@ -246,13 +314,13 @@ func (s *Store) List(ctx context.Context, limit int, cursor, tag string) (ListRe
 	}
 	args = append(args, limit+1)
 	query := `SELECT m.id, m.filename, m.original_name, m.mime_type, m.size, m.description,
-		m.description_status, m.description_generated, m.created_at,
+		m.description_status, m.description_generated, m.sort_order, m.created_at,
 		COALESCE(GROUP_CONCAT(t.name, ','), '')
 		FROM memes m
 		LEFT JOIN meme_tags mt ON mt.meme_id = m.id
 		LEFT JOIN tags t ON t.id = mt.tag_id
 		WHERE ` + strings.Join(where, " AND ") + `
-		GROUP BY m.id ORDER BY m.created_at DESC, m.id DESC LIMIT ?`
+		GROUP BY m.id ORDER BY m.sort_order DESC, m.created_at DESC, m.id DESC LIMIT ?`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return ListResult{}, fmt.Errorf("list memes: %w", err)
@@ -264,7 +332,7 @@ func (s *Store) List(ctx context.Context, limit int, cursor, tag string) (ListRe
 		var generated int
 		var tagList string
 		if err := rows.Scan(&meme.ID, &meme.Filename, &meme.OriginalName, &meme.MimeType, &meme.Size,
-			&meme.Description, &meme.DescriptionStatus, &generated, &meme.CreatedAt, &tagList); err != nil {
+			&meme.Description, &meme.DescriptionStatus, &generated, &meme.SortOrder, &meme.CreatedAt, &tagList); err != nil {
 			return ListResult{}, fmt.Errorf("scan meme: %w", err)
 		}
 		meme.DescriptionGenerated = generated != 0
@@ -283,7 +351,7 @@ func (s *Store) List(ctx context.Context, limit int, cursor, tag string) (ListRe
 	if len(memes) > limit {
 		last := memes[limit-1]
 		memes = memes[:limit]
-		next = encodeCursor(last.CreatedAt, last.ID)
+		next = encodeCursor(last.SortOrder, last.CreatedAt, last.ID)
 	}
 	total, err := s.count(ctx, tag)
 	if err != nil {
@@ -348,6 +416,70 @@ func (s *Store) Delete(ctx context.Context, id string) (Meme, error) {
 	return meme, nil
 }
 
+// Move places id immediately before beforeID in the current display order.
+// An empty beforeID moves the meme to the end. Re-numbering keeps future
+// inserts and cursor pagination deterministic after repeated rearrangements.
+func (s *Store) Move(ctx context.Context, id, beforeID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin meme move: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM memes ORDER BY sort_order DESC, created_at DESC, id DESC`)
+	if err != nil {
+		return fmt.Errorf("list memes for move: %w", err)
+	}
+	ids := []string{}
+	for rows.Next() {
+		var currentID string
+		if err := rows.Scan(&currentID); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, currentID)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	from := -1
+	for index, currentID := range ids {
+		if currentID == id {
+			from = index
+			break
+		}
+	}
+	if from < 0 {
+		return ErrNotFound
+	}
+	ids = append(ids[:from], ids[from+1:]...)
+	to := len(ids)
+	if beforeID != "" {
+		to = -1
+		for index, currentID := range ids {
+			if currentID == beforeID {
+				to = index
+				break
+			}
+		}
+		if to < 0 {
+			return ErrNotFound
+		}
+	}
+	ids = append(ids, "")
+	copy(ids[to+1:], ids[to:])
+	ids[to] = id
+	for index, currentID := range ids {
+		if _, err := tx.ExecContext(ctx, `UPDATE memes SET sort_order = ? WHERE id = ?`, int64(len(ids)-index), currentID); err != nil {
+			return fmt.Errorf("update meme move order: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit meme move: %w", err)
+	}
+	return nil
+}
+
 func boolInt(value bool) int {
 	if value {
 		return 1
@@ -357,21 +489,25 @@ func boolInt(value bool) int {
 
 var ErrNotFound = errors.New("meme not found")
 
-func encodeCursor(createdAt, id string) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(createdAt + "\x00" + id))
+func encodeCursor(sortOrder int64, createdAt, id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%d\x00%s\x00%s", sortOrder, createdAt, id)))
 }
 
-func decodeCursor(value string) (string, string, error) {
+func decodeCursor(value string) (int64, string, string, error) {
 	if value == "" {
-		return "", "", nil
+		return 0, "", "", nil
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil {
-		return "", "", fmt.Errorf("invalid cursor")
+		return 0, "", "", fmt.Errorf("invalid cursor")
 	}
-	parts := strings.SplitN(string(decoded), "\x00", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("invalid cursor")
+	parts := strings.SplitN(string(decoded), "\x00", 3)
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return 0, "", "", fmt.Errorf("invalid cursor")
 	}
-	return parts[0], parts[1], nil
+	var sortOrder int64
+	if _, err := fmt.Sscan(parts[0], &sortOrder); err != nil {
+		return 0, "", "", fmt.Errorf("invalid cursor")
+	}
+	return sortOrder, parts[1], parts[2], nil
 }
