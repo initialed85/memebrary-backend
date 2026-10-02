@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -99,6 +100,9 @@ CREATE INDEX IF NOT EXISTS meme_tags_tag_idx ON meme_tags(tag_id, meme_id);
 	if err := s.pruneFillerTags(ctx); err != nil {
 		return err
 	}
+	if err := s.sanitizeDescriptions(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -190,6 +194,45 @@ func (s *Store) pruneFillerTags(ctx context.Context) error {
 	}
 	_, err = s.db.ExecContext(ctx, `DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM meme_tags)`)
 	return err
+}
+
+func cleanStoredDescription(value string) string {
+	value = strings.TrimSpace(value)
+	var payload struct {
+		Description string `json:"description"`
+	}
+	if strings.HasPrefix(value, "{") && json.Unmarshal([]byte(value), &payload) == nil && strings.TrimSpace(payload.Description) != "" {
+		return strings.TrimSpace(payload.Description)
+	}
+	return value
+}
+
+func (s *Store) sanitizeDescriptions(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, description FROM memes WHERE description LIKE '{%'`)
+	if err != nil {
+		return err
+	}
+	updates := [][2]string{}
+	for rows.Next() {
+		var id, description string
+		if err := rows.Scan(&id, &description); err != nil {
+			rows.Close()
+			return err
+		}
+		cleaned := cleanStoredDescription(description)
+		if cleaned != description {
+			updates = append(updates, [2]string{id, cleaned})
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, update := range updates {
+		if _, err := s.db.ExecContext(ctx, `UPDATE memes SET description = ?, updated_at = ? WHERE id = ?`, update[1], time.Now().UTC().Format(time.RFC3339Nano), update[0]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) ensureMetadataVersion(ctx context.Context) error {
@@ -342,6 +385,7 @@ func (s *Store) Get(ctx context.Context, id string) (Meme, error) {
 	if err != nil {
 		return Meme{}, fmt.Errorf("get meme: %w", err)
 	}
+	meme.Description = cleanStoredDescription(meme.Description)
 	meme.DescriptionGenerated = generated != 0
 	meme.Tags, err = s.tags(ctx, meme.ID)
 	if err != nil {
@@ -363,6 +407,7 @@ func (s *Store) AllMetadata(ctx context.Context) ([]Meme, error) {
 		if err := rows.Scan(&meme.ID, &meme.Filename, &meme.OriginalName, &meme.MimeType, &meme.Size, &meme.Description, &meme.DescriptionStatus, &generated, &meme.SortOrder, &meme.MetadataVersion, &meme.CreatedAt); err != nil {
 			return nil, err
 		}
+		meme.Description = cleanStoredDescription(meme.Description)
 		meme.DescriptionGenerated = generated != 0
 		meme.Tags, err = s.tags(ctx, meme.ID)
 		if err != nil {
@@ -386,6 +431,7 @@ func (s *Store) Pending(ctx context.Context) ([]Meme, error) {
 		if err := rows.Scan(&meme.ID, &meme.Filename, &meme.MimeType, &meme.Description, &meme.DescriptionStatus, &generated, &meme.SortOrder, &meme.CreatedAt); err != nil {
 			return nil, err
 		}
+		meme.Description = cleanStoredDescription(meme.Description)
 		meme.DescriptionGenerated = generated != 0
 		pending = append(pending, meme)
 	}
@@ -487,6 +533,7 @@ func (s *Store) List(ctx context.Context, limit int, cursor, tag string) (ListRe
 			&meme.Description, &meme.DescriptionStatus, &generated, &meme.SortOrder, &meme.CreatedAt, &tagList); err != nil {
 			return ListResult{}, fmt.Errorf("scan meme: %w", err)
 		}
+		meme.Description = cleanStoredDescription(meme.Description)
 		meme.DescriptionGenerated = generated != 0
 		if tagList != "" {
 			meme.Tags = strings.Split(tagList, ",")
