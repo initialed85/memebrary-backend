@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -158,7 +159,7 @@ If an existing description is supplied, copy it exactly into description. If exi
 		"chat_template_kwargs": map[string]any{"enable_thinking": false},
 		"response_format":      map[string]string{"type": "json_object"},
 		"temperature":          0.2,
-		"max_tokens":           240,
+		"max_tokens":           600,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -213,6 +214,10 @@ func parseContent(raw json.RawMessage) (GeneratedContent, error) {
 				return normalizeResult(result), nil
 			}
 		}
+		partial := parsePartialContent(text)
+		if partial.Description != "" || len(partial.Hashtags) > 0 || len(partial.TextTags) > 0 {
+			return partial, nil
+		}
 		if text == "" {
 			return GeneratedContent{}, err
 		}
@@ -221,6 +226,85 @@ func parseContent(raw json.RawMessage) (GeneratedContent, error) {
 		return GeneratedContent{Description: text}, nil
 	}
 	return normalizeResult(result), nil
+}
+
+func parsePartialContent(text string) GeneratedContent {
+	result := GeneratedContent{}
+	if description := partialString(text, "description"); description != "" {
+		result.Description = cleanText(description)
+	}
+	result.Hashtags = partialArray(text, "hashtags")
+	result.TextTags = cleanTextTags(partialArray(text, "text_tags"))
+	return normalizeResult(result)
+}
+
+func partialString(text, field string) string {
+	marker := `"` + field + `"`
+	fieldStart := strings.Index(text, marker)
+	if fieldStart < 0 {
+		return ""
+	}
+	colon := strings.Index(text[fieldStart+len(marker):], ":")
+	if colon < 0 {
+		return ""
+	}
+	start := fieldStart + len(marker) + colon + 1
+	for start < len(text) && (text[start] == ' ' || text[start] == '\t') {
+		start++
+	}
+	if start >= len(text) || text[start] != '"' {
+		return ""
+	}
+	start++
+	for end := start; end < len(text); end++ {
+		if text[end] == '"' && (end == start || text[end-1] != '\\') {
+			value, err := strconv.Unquote(`"` + text[start:end] + `"`)
+			if err == nil {
+				return value
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+func partialArray(text, field string) []string {
+	marker := `"` + field + `"`
+	fieldStart := strings.Index(text, marker)
+	if fieldStart < 0 {
+		return nil
+	}
+	arrayStart := strings.Index(text[fieldStart+len(marker):], "[")
+	if arrayStart < 0 {
+		return nil
+	}
+	text = text[fieldStart+len(marker)+arrayStart+1:]
+	values := []string{}
+	for i := 0; i < len(text); {
+		if text[i] == ']' {
+			break
+		}
+		if text[i] != '"' {
+			i++
+			continue
+		}
+		end := i + 1
+		for end < len(text) {
+			if text[end] == '"' && text[end-1] != '\\' {
+				break
+			}
+			end++
+		}
+		if end >= len(text) {
+			break
+		}
+		var value string
+		if err := json.Unmarshal([]byte(text[i:end+1]), &value); err == nil {
+			values = append(values, value)
+		}
+		i = end + 1
+	}
+	return values
 }
 
 func normalizeResult(result GeneratedContent) GeneratedContent {

@@ -52,6 +52,13 @@ func TestRequestProducesStructuredDescriptionAndHashtags(t *testing.T) {
 	}
 }
 
+func TestParsePartialContentSalvagesTags(t *testing.T) {
+	result := parsePartialContent(`{"description":"A picture.","hashtags":["meme","funny"],"text_tags":["HELLO","WORLD"`)
+	if result.Description != "A picture." || len(result.Hashtags) != 2 || len(result.TextTags) != 2 {
+		t.Fatalf("unexpected partial result: %+v", result)
+	}
+}
+
 func TestTextTagsSkipFillerWords(t *testing.T) {
 	result := cleanTextTags([]string{"the", "1", "#2", "we are fucked", "out of office", "OpenAI"})
 	if len(result) != 3 || result[0] != "fucked" || result[1] != "office" || result[2] != "openai" {
