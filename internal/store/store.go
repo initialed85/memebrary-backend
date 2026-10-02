@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -196,6 +198,8 @@ func (s *Store) pruneFillerTags(ctx context.Context) error {
 	return err
 }
 
+var storedDescriptionField = regexp.MustCompile(`(?s)"description"\s*:\s*"((\\.|[^"\\])*)"`)
+
 func cleanStoredDescription(value string) string {
 	value = strings.TrimSpace(value)
 	var payload struct {
@@ -203,6 +207,11 @@ func cleanStoredDescription(value string) string {
 	}
 	if strings.HasPrefix(value, "{") && json.Unmarshal([]byte(value), &payload) == nil && strings.TrimSpace(payload.Description) != "" {
 		return strings.TrimSpace(payload.Description)
+	}
+	if match := storedDescriptionField.FindStringSubmatch(value); len(match) == 2 {
+		if description, err := strconv.Unquote(`"` + match[1] + `"`); err == nil && strings.TrimSpace(description) != "" {
+			return strings.TrimSpace(description)
+		}
 	}
 	return value
 }
