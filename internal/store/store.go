@@ -382,6 +382,20 @@ func (s *Store) AddTags(ctx context.Context, memeID string, tags []string) error
 	return s.setTags(ctx, memeID, tags)
 }
 
+func (s *Store) RemoveTag(ctx context.Context, memeID, tag string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM meme_tags WHERE meme_id = ? AND tag_id IN (SELECT id FROM tags WHERE name = ?)`, memeID, tag)
+	if err != nil {
+		return err
+	}
+	if count, err := result.RowsAffected(); err != nil {
+		return err
+	} else if count == 0 {
+		return ErrNotFound
+	}
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM tags WHERE name = ? AND id NOT IN (SELECT tag_id FROM meme_tags)`, tag)
+	return nil
+}
+
 func (s *Store) ReplaceTags(ctx context.Context, memeID string, tags []string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

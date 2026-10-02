@@ -14,6 +14,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -198,7 +199,7 @@ func (a *API) upload(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) memeAction(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if len(parts) < 3 || len(parts) > 4 || parts[0] != "api" || parts[1] != "memes" {
+	if len(parts) < 3 || len(parts) > 5 || parts[0] != "api" || parts[1] != "memes" {
 		notFound(w)
 		return
 	}
@@ -212,8 +213,12 @@ func (a *API) memeAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if parts[3] == "tags" {
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", "POST")
+		if len(parts) == 5 && r.Method == http.MethodDelete {
+			a.removeTag(w, r, parts[2], parts[4])
+			return
+		}
+		if len(parts) != 4 || r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST, DELETE")
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
@@ -254,6 +259,27 @@ func (a *API) memeAction(w http.ResponseWriter, r *http.Request) {
 	meme.DescriptionStatus = "pending"
 	a.generator.Enqueue(meme)
 	writeJSON(w, http.StatusAccepted, meme)
+}
+
+func (a *API) removeTag(w http.ResponseWriter, r *http.Request, id, encodedTag string) {
+	tag, err := url.PathUnescape(encodedTag)
+	if err != nil {
+		badRequest(w, "invalid tag")
+		return
+	}
+	if err := a.store.RemoveTag(r.Context(), id, tag); errors.Is(err, store.ErrNotFound) {
+		notFound(w)
+		return
+	} else if err != nil {
+		serverError(w, err)
+		return
+	}
+	meme, err := a.store.Get(r.Context(), id)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, meme)
 }
 
 func (a *API) addTags(w http.ResponseWriter, r *http.Request, id string) {
