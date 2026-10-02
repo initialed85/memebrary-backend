@@ -119,6 +119,9 @@ func (g *Generator) generate(ctx context.Context, meme store.Meme) {
 	if err := g.store.UpdateGeneratedContent(context.Background(), meme.ID, description, status, generatedDescription, generatedTags); err != nil {
 		return
 	}
+	if g.reprocessExisting && len(generatedTags) > 0 {
+		_ = g.store.ReplaceTags(context.Background(), meme.ID, generatedTags)
+	}
 }
 
 func (g *Generator) markFailed(meme store.Meme) {
@@ -131,7 +134,7 @@ var osReadFile = func(name string) ([]byte, error) { return os.ReadFile(name) }
 func (g *Generator) request(ctx context.Context, mimeType string, image []byte, existingDescription string, existingTags []string) (GeneratedContent, error) {
 	imageURL := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(image)
 	instruction := `Return only one valid JSON object, with exactly these fields: {"description":"one concise sentence","hashtags":["short-tag"],"text_tags":["visible-word"]}.
-Describe what is visibly happening in the image. Hashtags must be 3-6 short lowercase visual or meme-context tags, without # or explanations. text_tags must contain every clearly readable word or short phrase visible in the image, kept as close to the exact spelling as possible, lowercase, without punctuation. Do not invent text and do not omit readable words. Use an empty array only when no text is visible.
+Describe what is visibly happening in the image. Hashtags must be 3-6 short lowercase visual or meme-context tags, without # or explanations. text_tags must contain only complete, clearly readable words or short phrases visible in the image, kept as close to the exact spelling as possible, lowercase, without punctuation. Never abbreviate, truncate, or guess a partial word; omit anything uncertain. Use an empty array only when no text is visible.
 If an existing description is supplied, copy it exactly into description. If existing hashtags are supplied, copy them exactly into hashtags. Always inspect the image for text_tags.`
 	payload := map[string]any{
 		"model": g.model,
@@ -269,7 +272,7 @@ func cleanTextTags(tags []string) []string {
 		kept := make([]string, 0, len(words))
 		for _, word := range words {
 			word = strings.Trim(word, ".,!?;:'\"()[]{}")
-			if word != "" && !store.IsNoisyTag(word) {
+			if len([]rune(word)) > 1 && !store.IsNoisyTag(word) {
 				kept = append(kept, word)
 			}
 		}

@@ -360,6 +360,29 @@ func (s *Store) AddTags(ctx context.Context, memeID string, tags []string) error
 	return s.setTags(ctx, memeID, tags)
 }
 
+func (s *Store) ReplaceTags(ctx context.Context, memeID string, tags []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM meme_tags WHERE meme_id = ?`, memeID); err != nil {
+		return err
+	}
+	for _, tag := range tags {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO tags(name) VALUES (?) ON CONFLICT(name) DO NOTHING`, tag); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO meme_tags(meme_id, tag_id) SELECT ?, id FROM tags WHERE name = ? ON CONFLICT DO NOTHING`, memeID, tag); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM meme_tags)`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) setTags(ctx context.Context, memeID string, tags []string) error {
 	for _, tag := range tags {
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO tags(name) VALUES (?) ON CONFLICT(name) DO NOTHING`, tag); err != nil {
