@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -198,8 +197,6 @@ func (s *Store) pruneFillerTags(ctx context.Context) error {
 	return err
 }
 
-var storedDescriptionField = regexp.MustCompile(`(?s)"description"\s*:\s*"((\\.|[^"\\])*)"`)
-
 func cleanStoredDescription(value string) string {
 	value = strings.TrimSpace(value)
 	var payload struct {
@@ -208,9 +205,25 @@ func cleanStoredDescription(value string) string {
 	if strings.HasPrefix(value, "{") && json.Unmarshal([]byte(value), &payload) == nil && strings.TrimSpace(payload.Description) != "" {
 		return strings.TrimSpace(payload.Description)
 	}
-	if match := storedDescriptionField.FindStringSubmatch(value); len(match) == 2 {
-		if description, err := strconv.Unquote(`"` + match[1] + `"`); err == nil && strings.TrimSpace(description) != "" {
-			return strings.TrimSpace(description)
+	marker := strings.Index(value, `"description"`)
+	if marker >= 0 {
+		colon := strings.Index(value[marker+len(`"description"`):], ":")
+		if colon >= 0 {
+			start := marker + len(`"description"`) + colon + 1
+			for start < len(value) && (value[start] == ' ' || value[start] == '\t') {
+				start++
+			}
+			if start < len(value) && value[start] == '"' {
+				start++
+				for end := start; end < len(value); end++ {
+					if value[end] == '"' && (end == start || value[end-1] != '\\') {
+						raw := value[start:end]
+						if description, err := strconv.Unquote(`"` + raw + `"`); err == nil && strings.TrimSpace(description) != "" {
+							return strings.TrimSpace(description)
+						}
+					}
+				}
+			}
 		}
 	}
 	return value

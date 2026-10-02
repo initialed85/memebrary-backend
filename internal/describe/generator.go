@@ -24,6 +24,7 @@ type Generator struct {
 	client            *http.Client
 	store             *store.Store
 	reprocessExisting bool
+	workers           int
 	jobs              chan store.Meme
 }
 
@@ -33,7 +34,7 @@ type GeneratedContent struct {
 	TextTags    []string `json:"text_tags"`
 }
 
-func New(baseURL, model, apiKey string, dataStore *store.Store, reprocessExisting bool) *Generator {
+func New(baseURL, model, apiKey string, dataStore *store.Store, reprocessExisting bool, workers int) *Generator {
 	return &Generator{
 		baseURL:           strings.TrimRight(baseURL, "/"),
 		model:             model,
@@ -41,6 +42,7 @@ func New(baseURL, model, apiKey string, dataStore *store.Store, reprocessExistin
 		client:            &http.Client{Timeout: 90 * time.Second},
 		store:             dataStore,
 		reprocessExisting: reprocessExisting,
+		workers:           max(1, workers),
 		jobs:              make(chan store.Meme, 64),
 	}
 }
@@ -51,7 +53,7 @@ func (g *Generator) Start(ctx context.Context) {
 	if !g.Enabled() {
 		return
 	}
-	for i := 0; i < 2; i++ {
+	for i := 0; i < g.workers; i++ {
 		go func() {
 			for {
 				select {

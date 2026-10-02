@@ -16,6 +16,7 @@ type Config struct {
 	AIBaseURL         string
 	AIModel           string
 	AIAPIKey          string
+	AIWorkers         int
 	ReprocessExisting bool
 	CORSOrigin        string
 }
@@ -31,6 +32,7 @@ func Load() Config {
 		AIBaseURL:         strings.TrimRight(envFirst("AI_BASE_URL", "OPENAI_BASE_URL"), "/"),
 		AIModel:           envFirstDefault("AI_MODEL", "OPENAI_MODEL", "unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q6_K_XL"),
 		AIAPIKey:          envFirst("AI_API_KEY", "OPENAI_API_KEY"),
+		AIWorkers:         int(envInt64("AI_WORKERS", 1)),
 		ReprocessExisting: envBool("AI_REPROCESS_EXISTING"),
 		CORSOrigin:        env("CORS_ORIGIN", "http://localhost:5173"),
 	}

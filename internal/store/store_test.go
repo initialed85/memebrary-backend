@@ -7,6 +7,13 @@ import (
 	"testing"
 )
 
+func TestCleanStoredDescriptionJSON(t *testing.T) {
+	raw := `{ "description": "A complete description.", "hashtags": ["x"]`
+	if got := cleanStoredDescription(raw); got != "A complete description." {
+		t.Fatalf("unexpected sanitized description: %q", got)
+	}
+}
+
 func TestCreateListAndCursor(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(ctx, filepath.Join(t.TempDir(), "memebrary.db"))
