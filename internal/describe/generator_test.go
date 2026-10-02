@@ -42,7 +42,7 @@ func TestRequestProducesStructuredDescriptionAndHashtags(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dataStore.Close()
-	generator := New(server.URL, "test-model", "", dataStore, false, 1)
+	generator := New(server.URL, "test-model", "", dataStore, false, 1, nil)
 	result, err := generator.request(context.Background(), "image/png", []byte("image"), "", nil)
 	if err != nil {
 		t.Fatal(err)

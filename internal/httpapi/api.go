@@ -26,6 +26,29 @@ import (
 	"github.com/initialed85/memebrary-backend/internal/store"
 )
 
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (w *loggingResponseWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *loggingResponseWriter) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	n, err := w.ResponseWriter.Write(body)
+	w.bytes += n
+	return n, err
+}
+
 type API struct {
 	store      *store.Store
 	generator  *describe.Generator
@@ -41,6 +64,9 @@ func New(dataStore *store.Store, generator *describe.Generator, mediaDir string,
 
 func (a *API) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		loggedWriter := &loggingResponseWriter{ResponseWriter: w}
+		w = loggedWriter
 		if a.corsOrigin != "" {
 			origin := a.corsOrigin
 			if origin == "*" || origin == r.Header.Get("Origin") {
@@ -54,9 +80,12 @@ func (a *API) Handler() http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		start := time.Now()
 		defer func() {
-			a.logger.Debug("request", "method", r.Method, "path", r.URL.Path, "duration", time.Since(start))
+			status := loggedWriter.status
+			if status == 0 {
+				status = http.StatusOK
+			}
+			a.logger.Info("http request", "method", r.Method, "path", r.URL.Path, "status", status, "bytes", loggedWriter.bytes, "duration", time.Since(started))
 		}()
 
 		switch {
@@ -186,6 +215,7 @@ func (a *API) upload(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
+	a.logger.Info("meme uploaded", "id", meme.ID, "mime", mimeType, "bytes", len(data), "tags", len(tags), "description_present", description != "", "vision_pending", status == "pending")
 	if status == "pending" {
 		a.generator.Enqueue(meme)
 	}
@@ -295,6 +325,7 @@ func (a *API) addTags(w http.ResponseWriter, r *http.Request, id string) {
 		badRequest(w, "at least one valid tag is required")
 		return
 	}
+	a.logger.Info("adding meme tags", "id", id, "tags", len(tags))
 	if err := a.store.AddTags(r.Context(), id, tags); errors.Is(err, store.ErrNotFound) {
 		notFound(w)
 		return
@@ -327,6 +358,7 @@ func (a *API) moveMeme(w http.ResponseWriter, r *http.Request, id string) {
 		badRequest(w, "a meme cannot be moved relative to itself")
 		return
 	}
+	a.logger.Info("moving meme order", "id", id, "before_id", input.BeforeID, "after_id", input.AfterID)
 	var moveErr error
 	if input.AfterID != "" {
 		moveErr = a.store.MoveAfter(r.Context(), id, input.AfterID)
@@ -364,6 +396,7 @@ func (a *API) deleteMeme(w http.ResponseWriter, r *http.Request, id string) {
 	if err := os.Remove(meme.Filename); err != nil && !errors.Is(err, os.ErrNotExist) {
 		a.logger.Warn("remove deleted meme file", "id", id, "error", err)
 	}
+	a.logger.Info("meme deleted", "id", id)
 	w.WriteHeader(http.StatusNoContent)
 }
 

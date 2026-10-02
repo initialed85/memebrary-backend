@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
@@ -26,6 +27,7 @@ type Generator struct {
 	store             *store.Store
 	reprocessExisting bool
 	workers           int
+	logger            *slog.Logger
 	jobs              chan store.Meme
 }
 
@@ -35,7 +37,10 @@ type GeneratedContent struct {
 	TextTags    []string `json:"text_tags"`
 }
 
-func New(baseURL, model, apiKey string, dataStore *store.Store, reprocessExisting bool, workers int) *Generator {
+func New(baseURL, model, apiKey string, dataStore *store.Store, reprocessExisting bool, workers int, logger *slog.Logger) *Generator {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Generator{
 		baseURL:           strings.TrimRight(baseURL, "/"),
 		model:             model,
@@ -44,6 +49,7 @@ func New(baseURL, model, apiKey string, dataStore *store.Store, reprocessExistin
 		store:             dataStore,
 		reprocessExisting: reprocessExisting,
 		workers:           max(1, workers),
+		logger:            logger,
 		jobs:              make(chan store.Meme, 64),
 	}
 }
@@ -52,8 +58,10 @@ func (g *Generator) Enabled() bool { return g.baseURL != "" }
 
 func (g *Generator) Start(ctx context.Context) {
 	if !g.Enabled() {
+		g.logger.Info("vision generator disabled")
 		return
 	}
+	g.logger.Info("vision generator starting", "workers", g.workers, "model", g.model, "reprocess_existing", g.reprocessExisting)
 	for i := 0; i < g.workers; i++ {
 		go func() {
 			for {
@@ -67,15 +75,21 @@ func (g *Generator) Start(ctx context.Context) {
 		}()
 	}
 	if pending, err := g.store.Pending(ctx); err == nil {
+		g.logger.Info("queued pending vision jobs", "count", len(pending))
 		for _, meme := range pending {
 			g.Enqueue(meme)
 		}
+	} else {
+		g.logger.Error("list pending vision jobs failed", "error", err)
 	}
 	if g.reprocessExisting {
 		if allMemes, err := g.store.AllMetadata(ctx); err == nil {
+			g.logger.Info("queued metadata reprocessing jobs", "count", len(allMemes))
 			for _, meme := range allMemes {
 				g.Enqueue(meme)
 			}
+		} else {
+			g.logger.Error("list metadata reprocessing jobs failed", "error", err)
 		}
 	}
 }
@@ -86,19 +100,25 @@ func (g *Generator) Enqueue(meme store.Meme) {
 	}
 	select {
 	case g.jobs <- meme:
+		g.logger.Debug("vision job queued", "id", meme.ID, "tags", len(meme.Tags), "description_present", meme.Description != "")
 	default:
+		g.logger.Warn("vision queue full", "id", meme.ID)
 		_ = g.store.UpdateGeneratedContent(context.Background(), meme.ID, meme.Description, "failed", meme.DescriptionGenerated, nil)
 	}
 }
 
 func (g *Generator) generate(ctx context.Context, meme store.Meme) {
+	started := time.Now()
+	g.logger.Info("vision job started", "id", meme.ID, "mime", meme.MimeType, "size", meme.Size, "existing_tags", len(meme.Tags))
 	imageBytes, err := osReadFile(meme.Filename)
 	if err != nil {
+		g.logger.Error("vision image read failed", "id", meme.ID, "error", err)
 		g.markFailed(meme)
 		return
 	}
 	result, err := g.request(ctx, meme.MimeType, imageBytes, meme.Description, meme.Tags)
 	if err != nil {
+		g.logger.Error("vision request failed", "id", meme.ID, "error", err, "duration", time.Since(started))
 		g.markFailed(meme)
 		return
 	}
@@ -120,11 +140,13 @@ func (g *Generator) generate(ctx context.Context, meme store.Meme) {
 		status = "failed"
 	}
 	if err := g.store.UpdateGeneratedContent(context.Background(), meme.ID, description, status, generatedDescription, generatedTags); err != nil {
+		g.logger.Error("vision result persistence failed", "id", meme.ID, "error", err, "duration", time.Since(started))
 		return
 	}
 	if g.reprocessExisting && len(generatedTags) > 0 {
 		_ = g.store.ReplaceTags(context.Background(), meme.ID, generatedTags)
 	}
+	g.logger.Info("vision job finished", "id", meme.ID, "status", status, "description_generated", generatedDescription, "tags_generated", len(generatedTags), "duration", time.Since(started))
 }
 
 func (g *Generator) markFailed(meme store.Meme) {
