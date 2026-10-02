@@ -46,7 +46,7 @@ func (a *API) Handler() http.Handler {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Vary", "Origin")
 				w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 			}
 		}
 		if r.Method == http.MethodOptions {
@@ -196,11 +196,20 @@ func (a *API) upload(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) memeAction(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if len(parts) != 4 || parts[0] != "api" || parts[1] != "memes" || parts[3] != "describe" {
+	if len(parts) < 3 || len(parts) > 4 || parts[0] != "api" || parts[1] != "memes" {
 		notFound(w)
 		return
 	}
-	if r.Method != http.MethodPost {
+	if len(parts) == 3 {
+		if r.Method != http.MethodDelete {
+			w.Header().Set("Allow", "DELETE")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		a.deleteMeme(w, r, parts[2])
+		return
+	}
+	if parts[3] != "describe" || r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -225,6 +234,30 @@ func (a *API) memeAction(w http.ResponseWriter, r *http.Request) {
 	meme.DescriptionStatus = "pending"
 	a.generator.Enqueue(meme)
 	writeJSON(w, http.StatusAccepted, meme)
+}
+
+func (a *API) deleteMeme(w http.ResponseWriter, r *http.Request, id string) {
+	meme, err := a.store.Get(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		notFound(w)
+		return
+	}
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	if _, err := a.store.Delete(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			notFound(w)
+			return
+		}
+		serverError(w, err)
+		return
+	}
+	if err := os.Remove(meme.Filename); err != nil && !errors.Is(err, os.ErrNotExist) {
+		a.logger.Warn("remove deleted meme file", "id", id, "error", err)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) media(w http.ResponseWriter, r *http.Request) {

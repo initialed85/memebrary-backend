@@ -329,6 +329,25 @@ func (s *Store) Filename(ctx context.Context, id string) (string, error) {
 	return filename, err
 }
 
+func (s *Store) Delete(ctx context.Context, id string) (Meme, error) {
+	meme, err := s.Get(ctx, id)
+	if err != nil {
+		return Meme{}, err
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM memes WHERE id = ?`, id)
+	if err != nil {
+		return Meme{}, fmt.Errorf("delete meme: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return Meme{}, err
+	}
+	if count == 0 {
+		return Meme{}, ErrNotFound
+	}
+	return meme, nil
+}
+
 func boolInt(value bool) int {
 	if value {
 		return 1

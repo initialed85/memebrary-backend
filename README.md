@@ -1,6 +1,6 @@
 # memebrary backend
 
-Go HTTP API for meme/brary. It stores metadata in SQLite, image bytes in the configured media directory, and optionally queues image descriptions through an OpenAI-compatible vision endpoint.
+Go HTTP API for meme/brary. It stores metadata in SQLite, image bytes in the configured media directory, and optionally queues structured image descriptions and hashtags through an OpenAI-compatible vision endpoint.
 
 ```sh
 go run ./cmd/memebrary

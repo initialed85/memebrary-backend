@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -69,5 +70,11 @@ func TestCreateListAndCursor(t *testing.T) {
 	}
 	if len(updated.Tags) != 2 || updated.Tags[0] != "dogs" || updated.Tags[1] != "reaction" {
 		t.Fatalf("generated tags were overwritten: %+v", updated.Tags)
+	}
+	if deleted, err := s.Delete(ctx, third.ID); err != nil || deleted.ID != third.ID {
+		t.Fatalf("delete meme: meme=%+v err=%v", deleted, err)
+	}
+	if _, err := s.Get(ctx, third.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected deleted meme to be absent, got %v", err)
 	}
 }
