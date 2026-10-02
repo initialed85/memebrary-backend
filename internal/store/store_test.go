@@ -63,11 +63,14 @@ func TestCreateListAndCursor(t *testing.T) {
 	if err := s.UpdateGeneratedContent(ctx, third.ID, "A generated description.", "ready", true, []string{"reaction", "dogs"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.AddTags(ctx, third.ID, []string{"favorite", "dogs"}); err != nil {
+		t.Fatal(err)
+	}
 	updated, err := s.Get(ctx, third.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Description != "A generated description." || !updated.DescriptionGenerated || len(updated.Tags) != 2 {
+	if updated.Description != "A generated description." || !updated.DescriptionGenerated || len(updated.Tags) != 3 {
 		t.Fatalf("unexpected generated content: %+v", updated)
 	}
 	// A later worker/retry must not overwrite tags already supplied or generated.
@@ -78,7 +81,7 @@ func TestCreateListAndCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(updated.Tags) != 3 || updated.Tags[0] != "different" || updated.Tags[1] != "dogs" || updated.Tags[2] != "reaction" {
+	if len(updated.Tags) != 4 || updated.Tags[0] != "different" || updated.Tags[1] != "dogs" || updated.Tags[2] != "favorite" || updated.Tags[3] != "reaction" {
 		t.Fatalf("generated tags were not merged: %+v", updated.Tags)
 	}
 	if deleted, err := s.Delete(ctx, third.ID); err != nil || deleted.ID != third.ID {

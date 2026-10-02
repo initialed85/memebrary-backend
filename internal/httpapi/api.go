@@ -211,6 +211,15 @@ func (a *API) memeAction(w http.ResponseWriter, r *http.Request) {
 		a.deleteMeme(w, r, parts[2])
 		return
 	}
+	if parts[3] == "tags" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		a.addTags(w, r, parts[2])
+		return
+	}
 	if parts[3] == "order" {
 		if r.Method != http.MethodPatch {
 			w.Header().Set("Allow", "PATCH")
@@ -245,6 +254,34 @@ func (a *API) memeAction(w http.ResponseWriter, r *http.Request) {
 	meme.DescriptionStatus = "pending"
 	a.generator.Enqueue(meme)
 	writeJSON(w, http.StatusAccepted, meme)
+}
+
+func (a *API) addTags(w http.ResponseWriter, r *http.Request, id string) {
+	var input struct {
+		Tags []string `json:"tags"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		badRequest(w, "invalid tag request")
+		return
+	}
+	tags := parseTags(strings.Join(input.Tags, " "))
+	if len(tags) == 0 {
+		badRequest(w, "at least one valid tag is required")
+		return
+	}
+	if err := a.store.AddTags(r.Context(), id, tags); errors.Is(err, store.ErrNotFound) {
+		notFound(w)
+		return
+	} else if err != nil {
+		serverError(w, err)
+		return
+	}
+	meme, err := a.store.Get(r.Context(), id)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, meme)
 }
 
 func (a *API) moveMeme(w http.ResponseWriter, r *http.Request, id string) {

@@ -310,6 +310,13 @@ func (s *Store) Create(ctx context.Context, meme Meme, tags []string) error {
 	return nil
 }
 
+func (s *Store) AddTags(ctx context.Context, memeID string, tags []string) error {
+	if _, err := s.Get(ctx, memeID); err != nil {
+		return err
+	}
+	return s.setTags(ctx, memeID, tags)
+}
+
 func (s *Store) setTags(ctx context.Context, memeID string, tags []string) error {
 	for _, tag := range tags {
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO tags(name) VALUES (?) ON CONFLICT(name) DO NOTHING`, tag); err != nil {
