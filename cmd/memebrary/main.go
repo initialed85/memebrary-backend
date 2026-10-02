@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -22,6 +23,10 @@ func main() {
 	cfg := config.Load()
 	if err := os.MkdirAll(cfg.MediaDir, 0o755); err != nil {
 		logger.Error("create media directory", "error", err)
+		os.Exit(1)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
+		logger.Error("create database directory", "error", err)
 		os.Exit(1)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
